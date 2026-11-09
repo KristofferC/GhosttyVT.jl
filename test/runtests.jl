@@ -96,7 +96,19 @@ end
     html = format(t, :html)
     @test occursin("bold", html) && occursin("<", html)
     @test repr(MIME"text/html"(), t) == html
+    @test occursin("--vt-palette-0:", html)
+    bare = format(t, :html; extras = false)
+    @test !occursin("<style", bare) && occursin("bold", bare)
     @test_throws ArgumentError format(t, :pdf)
+end
+
+@testset "linefeed mode" begin
+    t = Terminal(20, 4)
+    write(t, "a\nb")
+    @test format(t) == "a\n b"
+    t = Terminal(20, 4; linefeed = true)
+    write(t, "a\nb")
+    @test format(t) == "a\nb"
 end
 
 @testset "callbacks" begin

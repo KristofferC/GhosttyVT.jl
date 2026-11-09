@@ -33,11 +33,15 @@ check(result, func::Symbol) = result == L.GHOSTTY_SUCCESS ? nothing : throw(Ghos
 ############
 
 """
-    Terminal(cols = 80, rows = 24; scrollback_bytes = typemax(Int)) <: IO
+    Terminal(cols = 80, rows = 24; scrollback_bytes = typemax(Int), linefeed = false) <: IO
 
 A terminal emulator. Write the output of a program to it with `write` or
 `print`; escape sequences are interpreted, not stored. Scrollback is unlimited
 by default.
+
+A terminal moves to the start of the next line only on `"\r\n"`, which a PTY
+produces from the program's `"\n"`. For output captured without a PTY, pass
+`linefeed = true` (ANSI linefeed mode) to treat a bare `"\n"` the same way.
 
 Not thread-safe: use a terminal from one task at a time.
 """
@@ -50,13 +54,15 @@ mutable struct Terminal <: IO
     key_event::L.GhosttyKeyEvent
 end
 
-function Terminal(cols::Integer = 80, rows::Integer = 24; scrollback_bytes::Integer = typemax(Int))
+function Terminal(cols::Integer = 80, rows::Integer = 24; scrollback_bytes::Integer = typemax(Int),
+                  linefeed::Bool = false)
     ptr = Ref{L.GhosttyTerminal}(C_NULL)
     check(L.ghostty_terminal_new(C_NULL, ptr, cols, rows), :ghostty_terminal_new)
     t = Terminal(ptr[], Dict{Symbol, Any}(), nothing, C_NULL, C_NULL)
     finalizer(close, t)
     setopt!(t, L.GHOSTTY_TERMINAL_OPT_USERDATA, pointer_from_objref(t))
     setopt!(t, L.GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, Ref{Csize_t}(min(scrollback_bytes, typemax(Csize_t))))
+    linefeed && write(t, "\e[20h")
     return t
 end
 
@@ -348,13 +354,18 @@ const FORMATS = (plain = L.GHOSTTY_FORMATTER_FORMAT_PLAIN, vt = L.GHOSTTY_FORMAT
                  html = L.GHOSTTY_FORMATTER_FORMAT_HTML)
 
 """
-    format(t::Terminal, as::Symbol = :plain; unwrap = false, trim = true) -> String
+    format(t::Terminal, as::Symbol = :plain; unwrap = false, trim = true, extras = true) -> String
 
 The screen including scrollback as `:plain` text, `:vt` (text with escape
 sequences that reproduce the styles) or `:html`. `unwrap` joins lines that
 were wrapped because they were too long; `trim` removes trailing spaces.
+
+With `extras = true`, `:vt` and `:html` output also carry terminal state such
+as the color palette, which for HTML is a `<style>` block defining
+`--vt-palette-0` to `--vt-palette-255` on `:root`. Pass `extras = false` when
+embedding the HTML in a page that defines those variables itself.
 """
-function format(t::Terminal, as::Symbol = :plain; unwrap::Bool = false, trim::Bool = true)
+function format(t::Terminal, as::Symbol = :plain; unwrap::Bool = false, trim::Bool = true, extras::Bool = true)
     fmt = get(() -> throw(ArgumentError("format must be one of $(keys(FORMATS))")), FORMATS, as)
     f = Ref{L.GhosttyFormatter}(C_NULL)
     check(L.ghostty_formatter_terminal_new(C_NULL, f, handle(t)), :ghostty_formatter_terminal_new)
@@ -363,6 +374,8 @@ function format(t::Terminal, as::Symbol = :plain; unwrap::Bool = false, trim::Bo
                            (L.GHOSTTY_FORMATTER_OPT_TRIM, Ref(trim)))
             check(L.ghostty_formatter_set(f[], opt, val), :ghostty_formatter_set)
         end
+        extras || check(L.ghostty_formatter_set(f[], L.GHOSTTY_FORMATTER_OPT_EXTRAS, Ref{L.GhosttyFormatterExtras}(0)),
+                        :ghostty_formatter_set)
         ptr, len = Ref{Ptr{UInt8}}(C_NULL), Ref{Csize_t}(0)
         check(L.ghostty_formatter_format_alloc(f[], C_NULL, ptr, len), :ghostty_formatter_format_alloc)
         s = cstring(ptr[], len[])
